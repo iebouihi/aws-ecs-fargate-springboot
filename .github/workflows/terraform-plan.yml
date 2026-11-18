@@ -1,0 +1,104 @@
+name: Pull request checks (test + terraform plan)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "infra/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  pull-requests: write # to post the plan as a PR comment
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_VAR_FILE: envs/dev.tfvars
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  test:
+    name: Test application
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B verify
+
+  plan:
+    name: Terraform fmt / validate / plan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.16.0"
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Terraform validate
+        run: terraform validate
+
+      # The plan shows what merging this PR would change. The image tag is the
+      # PR head commit; the image itself is only built on merge to main.
+      - name: Terraform plan
+        id: plan
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock=false \
+            -var-file="${TF_VAR_FILE}" \
+            -var="image_tag=${{ github.event.pull_request.head.sha }}" \
+            | tee plan.txt
+
+      - name: Comment plan on PR
+        if: always() && steps.plan.outcome != 'skipped'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('infra/plan.txt', 'utf8');
+            const max = 60000;
+            if (plan.length > max) plan = plan.substring(plan.length - max);
+            const body = [
+              '### Terraform plan (dev) — `${{ steps.plan.outcome }}`',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

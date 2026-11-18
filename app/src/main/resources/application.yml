@@ -1,0 +1,23 @@
+server:
+  port: 8080
+  shutdown: graceful            # finish in-flight requests when ECS stops a task
+
+spring:
+  application:
+    name: demo
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+app:
+  version: ${APP_VERSION:local}           # injected by the ECS task definition (image tag)
+  environment: ${APP_ENVIRONMENT:local}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true           # /actuator/health/liveness and /readiness

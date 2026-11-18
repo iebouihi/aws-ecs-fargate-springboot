@@ -1,0 +1,58 @@
+name: Destroy infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to delete ALL resources (VPC, NAT, ALB, ECS, ECR and images)'
+        required: true
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_VAR_FILE: envs/dev.tfvars
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  destroy:
+    name: Terraform destroy
+    if: github.event.inputs.confirm == 'destroy'
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.16.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}"
+
+      # image_tag is required by the config but irrelevant for destroy
+      - name: Terraform destroy
+        run: |
+          terraform destroy -input=false -auto-approve \
+            -var-file="${TF_VAR_FILE}" \
+            -var="image_tag=destroy"
